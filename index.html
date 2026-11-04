@@ -1,0 +1,180 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clem Home — VEVOR Bluetooth</title>
+<style>
+body {
+  background: #06182b;
+  color: white;
+  font-family: Arial, sans-serif;
+  padding: 24px;
+  text-align: center;
+}
+main {
+  max-width: 500px;
+  margin: auto;
+  background: #0c2b47;
+  padding: 24px;
+  border-radius: 22px;
+}
+h1 { color: #28caff; }
+button {
+  padding: 15px 20px;
+  margin: 8px;
+  background: #079fe1;
+  border: 0;
+  border-radius: 12px;
+  color: white;
+  font-size: 16px;
+}
+button:disabled { opacity: .4; }
+.temp { font-size: 55px; color: #28caff; }
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  font-size: 12px;
+}
+</style>
+</head>
+<body>
+<main>
+<h1>❄️ Clem Home</h1>
+<h2>VEVOR 37 L</h2>
+<p id="status">Bluetooth déconnecté</p>
+
+<button onclick="connecter()">Connexion Bluetooth</button>
+<button id="read" onclick="lire()" disabled>
+Lire les températures
+</button>
+
+<p>Température actuelle</p>
+<div class="temp" id="temp">--°C</div>
+<p id="target">Température cible : --</p>
+<p id="mode">Mode : --</p>
+
+<h3>Journal Bluetooth</h3>
+<pre id="log">Aucune donnée reçue</pre>
+</main>
+
+<script>
+let appareil, ecriture, reception;
+let tampon = [];
+
+const afficher = texte => {
+  document.getElementById("log").textContent = texte;
+};
+
+const signe = x => x > 127 ? x - 256 : x;
+
+async function connecter() {
+  try {
+    appareil = await navigator.bluetooth.requestDevice({
+      filters: [{ name: "WT-0001" }],
+      optionalServices: [0x1234]
+    });
+
+    appareil.addEventListener("gattserverdisconnected", () => {
+      document.getElementById("status").textContent =
+        "Bluetooth déconnecté";
+      document.getElementById("read").disabled = true;
+    });
+
+    const serveur = await appareil.gatt.connect();
+    const service = await serveur.getPrimaryService(0x1234);
+
+    ecriture = await service.getCharacteristic(0x1235);
+    reception = await service.getCharacteristic(0x1236);
+
+    reception.addEventListener(
+      "characteristicvaluechanged",
+      evenement => {
+        const valeur = evenement.target.value;
+        const octets = new Uint8Array(
+          valeur.buffer,
+          valeur.byteOffset,
+          valeur.byteLength
+        );
+        analyser([...octets]);
+      }
+    );
+
+    await reception.startNotifications();
+
+    document.getElementById("status").textContent =
+      "✅ WT-0001 connecté";
+    document.getElementById("read").disabled = false;
+    afficher("Connexion établie. Prêt à lire les données.");
+
+  } catch (erreur) {
+    afficher("Erreur : " + erreur.message);
+  }
+}
+
+function analyser(octets) {
+  tampon.push(...octets);
+
+  while (tampon.length >= 6) {
+    if (tampon[0] !== 254 || tampon[1] !== 254) {
+      tampon.shift();
+      continue;
+    }
+
+    const taille = tampon[2] + 3;
+    if (taille < 6 || taille > 128) {
+      tampon.shift();
+      continue;
+    }
+    if (tampon.length < taille) return;
+
+    const trame = tampon.splice(0, taille);
+    const somme = trame.slice(0, -2)
+      .reduce((a, b) => (a + b) & 65535, 0);
+
+    if (trame[taille - 2] !== (somme >> 8) ||
+        trame[taille - 1] !== (somme & 255)) {
+      afficher("Trame reçue avec somme de contrôle invalide");
+      continue;
+    }
+
+    if (trame[3] !== 1) continue;
+
+    const donnees = trame.slice(4, -2);
+    if (donnees.length < 15) {
+      afficher("Réponse trop courte pour lire la température");
+      continue;
+    }
+
+    const unite = donnees[9] === 1 ? "°F" : "°C";
+
+    document.getElementById("temp").textContent =
+      signe(donnees[14]) + unite;
+
+    document.getElementById("target").textContent =
+      "Température cible : " + signe(donnees[4]) + unite;
+
+    document.getElementById("mode").textContent =
+      "Mode : " + (donnees[2] === 1 ? "ECO" : "MAX");
+
+    afficher("Données reçues et vérifiées !");
+  }
+}
+
+async function lire() {
+  try {
+    // Requête d'état uniquement : aucun réglage modifié.
+    const requete = new Uint8Array([
+      0xFE, 0xFE, 0x03, 0x01, 0x02, 0x00
+    ]);
+    await ecriture.writeValueWithoutResponse(requete);
+    afficher("Demande de lecture envoyée...");
+  } catch (erreur) {
+    afficher("Erreur de lecture : " + erreur.message);
+  }
+}
+</script>
+</body>
+</html>
